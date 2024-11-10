@@ -86,11 +86,6 @@ if [ "$NGXPATH" = '' ] && ( [ "$ACTION" = 'install' ] || [ "$ACTION" = 'upgrade'
     fi
 fi
 
-if [ "$NGXLICENSE" = '' ] && ( [ "$ACTION" = 'install' ] || [ "$ACTION" = 'upgrade' ] ) ; then
-    echo "-j option is mandatory for install/upgrade"
-    exit 1
-fi
-
 FILES=$*
 
 if [ -z "$FILES" ]; then
@@ -98,6 +93,26 @@ if [ -z "$FILES" ]; then
         echo "Please specify packages to install or upgrade."
         exit 1
     fi
+fi
+
+JWTREQ="NO"
+
+if [ "$ACTION" = 'install' ] || [ "$ACTION" = 'upgrade' ]; then
+    for pkg in $FILES; do
+        pkgname=$(basename "$pkg")
+        version=$(echo "$pkgname" | sed -n 's/^nginx-plus[_-]\([0-9]\+\).*$/\1/p')
+        if [ -n "$version" ]; then
+            if [ "$version" -ge 33 ]; then
+                JWTREQ="YES"
+            fi
+            break
+        fi
+    done
+fi
+
+if [ "$NGXLICENSE" = '' ] && ( [ "$ACTION" = 'install' ] || [ "$ACTION" = 'upgrade' ] ) && [ "$JWTREQ" = 'YES' ]; then
+    echo "-j option is mandatory for install/upgrade with NGINX Plus version >=33"
+    exit 1
 fi
 
 ARCH=x86_64
@@ -254,7 +269,9 @@ fetch() {
 prepare() {
     mkdir -p $ABSPATH
     TMPDIR=`mktemp -dq /tmp/nginx-prefix.XXXXXXXX`
-    cp $NGXLICENSE $TMPDIR/license.jwt
+    if [ "$JWTREQ" = 'YES' ]; then
+        cp $NGXLICENSE $TMPDIR/license.jwt
+    fi
     if [ "$DISTRO" = "debian" ] || [ "$DISTRO" = "ubuntu" ]; then
         for PKG in $FILES; do
             dpkg -x $PKG $TMPDIR
@@ -342,7 +359,7 @@ extract() {
         TARGETVER=$($ABSPATH/usr/sbin/nginx -v 2>&1 | cut -d '(' -f 2 | cut -d ')' -f 1 | cut -d'-' -f 3 | tr -d 'r')
         if [ $TARGETVER -ge 33 ]; then
             mv $TMPDIR/license.jwt $ABSPATH/etc/nginx/license.jwt
-            echo "mgmt { license_token $ABSPATH/etc/nginx/license.jwt; }" >> $ABSPATH/etc/nginx/nginx.conf
+            echo "mgmt { license_token $ABSPATH/etc/nginx/license.jwt; state_path $ABSPATH/var/lib/nginx/; }" >> $ABSPATH/etc/nginx/nginx.conf
         fi
         if [ $TARGETVER -ge 31 -a $TARGETVER -lt 33 ]; then
             echo "mgmt { uuid_file $ABSPATH/var/lib/nginx/nginx.id; }" >> $ABSPATH/etc/nginx/nginx.conf
@@ -384,8 +401,9 @@ upgrade() {
         TARGETVER=$($ABSPATH/usr/sbin/nginx -v 2>&1 | cut -d '(' -f 2 | cut -d ')' -f 1 | cut -d'-' -f 3 | tr -d 'r')
         if [ $TARGETVER -ge 33 ]; then
             if ! $ABSPATH/usr/sbin/nginx -p $ABSPATH/etc/nginx -c nginx.conf -T 2>&1 | grep 'license_token' | grep -vE '^(.*)#.*license_token' >/dev/null; then
+                sed -i '/uuid_file/d' $ABSPATH/etc/nginx/nginx.conf
                 cp $NGXLICENSE $ABSPATH/etc/nginx/license.jwt
-                echo "mgmt { license_token $ABSPATH/etc/nginx/license.jwt; }" >> $ABSPATH/etc/nginx/nginx.conf
+                echo "mgmt { license_token $ABSPATH/etc/nginx/license.jwt; state_path $ABSPATH/var/lib/nginx/; }" >> $ABSPATH/etc/nginx/nginx.conf
             fi
         fi
         if [ $TARGETVER -ge 31 -a $TARGETVER -lt 33 ]; then
